@@ -16,6 +16,7 @@ const jwt = require("jsonwebtoken");
 const { promisify } = require("util");
 const AppError = require("./utils/appError");
 const User = require("./models/userModel");
+const Game = require("./models/gameModel");
 
 process.on("uncaughtException", (err) => {
   console.log(err.name, err.message);
@@ -83,13 +84,49 @@ io.on("connection", async (socket) => {
     try {
       const inviter = await User.findById(inviterId);
       const invited = socket.user;
-      console.log(inviter, "inviter");
-      socket.to(inviter.socketId).emit("challengeAccepted");
-      socket.emit("challengeAccepted");
+
+      const whiteProb = Math.random();
+      let playerWhite = whiteProb > 0.5 ? inviter : invited;
+      let playerBlack = whiteProb < 0.5 ? inviter : invited;
+      let inviterColor = whiteProb > 0.5 ? "white" : "black";
+      let invitedColor = whiteProb < 0.5 ? "white" : "black";
+      const game = await Game.create({
+        playerBlack,
+        playerWhite,
+        fen: "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+        status: "pending",
+      });
+
+      socket.join(game._id);
+      socket
+        .to(inviter.socketId)
+        .emit("challengeAccepted", { color: inviterColor, gameId: game._id });
+      socket.emit("challengeAccepted", {
+        color: invitedColor,
+        gameId: game._id,
+      });
     } catch (error) {
       console.log(error);
     }
   });
+
+  socket.on("joinGame", function (gameId) {
+    socket.join(gameId);
+  });
+
+  socket.on("movePiece", async (move) => {
+    try {
+      const game = await Game.findById(move.gameId);
+      if (game) {
+        game.fen = move.fen;
+        await game.save();
+        io.to(move.gameId).emit("updateBoard", move.fen);
+      }
+    } catch (error) {
+      console.log("error in movePiece:", error);
+    }
+  });
+
   socket.on("disconnect", async () => {
     console.log("user disconnected");
 
