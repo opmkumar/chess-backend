@@ -17,12 +17,15 @@ const { promisify } = require("util");
 const AppError = require("./utils/appError");
 const User = require("./models/userModel");
 const Game = require("./models/gameModel");
+const { Chess } = require("chess.js");
 
 process.on("uncaughtException", (err) => {
   console.log(err.name, err.message);
   console.log("Uncaught exception! Closing the system");
   process.exit(1);
 });
+
+const getTime = () => new Date().getTime();
 
 io.use(async function (socket, next) {
   try {
@@ -118,9 +121,57 @@ io.on("connection", async (socket) => {
     try {
       const game = await Game.findById(move.gameId);
       if (game) {
+        const currentTime = getTime();
+        const elapsedTime = currentTime - game.lastMoveTime;
+
+        if (game.fen.split(" ")[1] === "w") {
+          game.whiteTime -= elapsedTime;
+        } else {
+          game.blackTime -= elapsedTime;
+        }
+
+        if (game.whiteTime <= 0 || game.blackTime <= 0) {
+          const result =
+            game.whiteTime <= 0
+              ? "Black wins by timeout"
+              : "White wins by timeout";
+          io.to(move.gameId).emit("gameOver", result);
+          return;
+        }
+
         game.fen = move.fen;
+        game.lastMoveTime = currentTime;
+
         await game.save();
         io.to(move.gameId).emit("updateBoard", move.fen);
+
+        const gameInstance = new Chess(game.fen);
+
+        if (gameInstance.isCheckmate()) {
+          game.status = "checkmate";
+          await game.save();
+          io.to(move.gameId).emit("gameOver", "checkmate");
+          console.log("checkmate");
+        } else if (gameInstance.isDraw()) {
+          game.status = "draw";
+          await game.save();
+          io.to(move.gameId).emit("gameOver", "draw");
+        }
+        if (gameInstance.isStalemate()) {
+          game.status = "stalemate";
+          await game.save();
+          io.to(move.gameId).emit("gameOver", "stalemate");
+        }
+        if (gameInstance.isThreefoldRepetition()) {
+          game.status = "Three fold repitition";
+          await game.save();
+          io.to(move.gameId).emit("gameOver", "Three fold repitition");
+        }
+        if (gameInstance.isInsufficientMaterial()) {
+          game.status = "insufficient material";
+          await game.save();
+          io.to(move.gameId).emit("gameOver", "insufficient material");
+        }
       }
     } catch (error) {
       console.log("error in movePiece:", error);
