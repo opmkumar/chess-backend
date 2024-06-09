@@ -15,8 +15,9 @@ const gameSchema = new mongoose.Schema({
   },
   lastMoveTime: {
     type: Number,
-    default: Date.now(),
+    default: () => Date.now(),
   },
+  winner: { type: String },
 });
 
 const Game = mongoose.model("Game", gameSchema);

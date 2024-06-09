@@ -27,6 +27,43 @@ process.on("uncaughtException", (err) => {
 
 const getTime = () => new Date().getTime();
 
+const gameTimers = {};
+
+const startGameTimer = (gameId) => {
+  clearInterval(gameTimers[gameId]);
+
+  gameTimers[gameId] = setInterval(async () => {
+    const game = await Game.findById(gameId);
+    if (!game || game.status !== "pending") return;
+
+    const currentTime = getTime();
+    const elapsedTime = currentTime - game.lastMoveTime;
+
+    if (game.fen.split(" ")[1] === "w") {
+      game.whiteTime -= elapsedTime;
+    } else {
+      game.blackTime -= elapsedTime;
+    }
+
+    if (game.whiteTime <= 0 || game.blackTime <= 0) {
+      const result =
+        game.whiteTime <= 0 ? "Black wins by timeout" : "White wins by timeout";
+      game.winner = result.includes("White") ? "White" : "Black";
+      game.status = "over";
+      await game.save();
+      io.to(gameId).emit("gameOver", result, game.winner);
+      return;
+    }
+
+    game.lastMoveTime = currentTime;
+    await game.save();
+    io.to(gameId).emit("updateTimes", {
+      whiteTime: game.whiteTime,
+      blackTime: game.blackTime,
+    });
+  }, 1000);
+};
+
 io.use(async function (socket, next) {
   try {
     if (socket.handshake.query && socket.handshake.query.jwt) {
@@ -108,73 +145,143 @@ io.on("connection", async (socket) => {
         color: invitedColor,
         gameId: game._id,
       });
+
+      // Send initial times to both players
+      io.to(game._id).emit("updateTimes", {
+        whiteTime: game.whiteTime,
+        blackTime: game.blackTime,
+      });
+
+      // Start the game timer
+      startGameTimer(game._id);
     } catch (error) {
       console.log(error);
     }
   });
 
-  socket.on("joinGame", function (gameId) {
+  socket.on("joinGame", async function (gameId) {
     socket.join(gameId);
+    const game = await Game.findById(gameId);
+    io.to(gameId).emit("updateTimes", {
+      whiteTime: game.whiteTime,
+      blackTime: game.blackTime,
+    });
+
+    // Start the game timer
+    startGameTimer(gameId);
   });
 
   socket.on("movePiece", async (move) => {
     try {
       const game = await Game.findById(move.gameId);
       if (game) {
-        const currentTime = getTime();
-        const elapsedTime = currentTime - game.lastMoveTime;
+        // const currentTime = getTime();
+        // const elapsedTime = currentTime - game.lastMoveTime;
 
-        if (game.fen.split(" ")[1] === "w") {
-          game.whiteTime -= elapsedTime;
-        } else {
-          game.blackTime -= elapsedTime;
-        }
+        // if (game.fen.split(" ")[1] === "w") {
+        //   game.whiteTime -= elapsedTime;
+        // } else {
+        //   game.blackTime -= elapsedTime;
+        // }
 
-        if (game.whiteTime <= 0 || game.blackTime <= 0) {
-          const result =
-            game.whiteTime <= 0
-              ? "Black wins by timeout"
-              : "White wins by timeout";
-          io.to(move.gameId).emit("gameOver", result);
-          return;
-        }
+        // if (game.whiteTime <= 0 || game.blackTime <= 0) {
+        //   const result =
+        //     game.whiteTime <= 0
+        //       ? "Black wins by timeout"
+        //       : "White wins by timeout";
+        //   game.winner = result.includes("White") ? "White" : "Black";
+        //   console.log(`Game over due to timeout: ${result}`);
+        //   io.to(move.gameId).emit("gameOver", result, game.winner);
+        //   return;
+        // }
 
         game.fen = move.fen;
-        game.lastMoveTime = currentTime;
+        // game.lastMoveTime = currentTime;
 
         await game.save();
         io.to(move.gameId).emit("updateBoard", move.fen);
+        // io.to(move.gameId).emit("updateTimes", {
+        //   whiteTime: game.whiteTime,
+        //   blackTime: game.blackTime,
+        // });
 
         const gameInstance = new Chess(game.fen);
-
+        // console.log(gameInstance.turn());
         if (gameInstance.isCheckmate()) {
+          if (gameInstance.turn() === "b") {
+            game.winner = "White";
+          } else {
+            game.winner = "Black";
+          }
           game.status = "checkmate";
           await game.save();
-          io.to(move.gameId).emit("gameOver", "checkmate");
+          io.to(move.gameId).emit("gameOver", "checkmate", game.winner);
           console.log("checkmate");
         } else if (gameInstance.isDraw()) {
           game.status = "draw";
+          game.winner = "";
           await game.save();
-          io.to(move.gameId).emit("gameOver", "draw");
+          io.to(move.gameId).emit("gameOver", "draw", game.winner);
         }
         if (gameInstance.isStalemate()) {
           game.status = "stalemate";
+          game.winner = "";
           await game.save();
-          io.to(move.gameId).emit("gameOver", "stalemate");
+          io.to(move.gameId).emit("gameOver", "stalemate", game.winner);
         }
         if (gameInstance.isThreefoldRepetition()) {
           game.status = "Three fold repitition";
+          game.winner = "";
           await game.save();
-          io.to(move.gameId).emit("gameOver", "Three fold repitition");
+          io.to(move.gameId).emit(
+            "gameOver",
+            "Three fold repitition",
+            game.winner
+          );
         }
         if (gameInstance.isInsufficientMaterial()) {
           game.status = "insufficient material";
+          game.winner = "";
           await game.save();
-          io.to(move.gameId).emit("gameOver", "insufficient material");
+          io.to(move.gameId).emit(
+            "gameOver",
+            "insufficient material",
+            game.winner
+          );
         }
       }
     } catch (error) {
       console.log("error in movePiece:", error);
+    }
+  });
+
+  socket.on("resign", async function (resign) {
+    const game = await Game.findById(resign.gameId);
+    game.status = "resign";
+    game.winner = resign.color === "white" ? "White" : "Black";
+    const result = `${game.winner} won by resignation`;
+    io.to(resign.gameId).emit("gameOver", result, game.winner);
+  });
+
+  socket.on("sendDraw", async (gameId) => {
+    const drawOfferedBy = socket.user;
+    console.log("draw sent");
+    socket.broadcast.to(gameId).emit("recieveDraw", socket.user.username);
+  });
+
+  socket.on("drawAccepted", async (gameId) => {
+    const game = await Game.findById(gameId);
+    game.status = "draw";
+    game.winner = "";
+    await game.save();
+    io.to(gameId).emit("gameOver", "draw", game.winner);
+  });
+  socket.on("stopTimer", async (gameId) => {
+    try {
+      // Stop the game timer associated with the specified gameId
+      clearInterval(gameTimers[gameId]);
+    } catch (error) {
+      console.log("Error stopping timer:", error);
     }
   });
 
