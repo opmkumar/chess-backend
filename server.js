@@ -252,7 +252,7 @@ io.on("connection", async (socket) => {
 
   socket.on("drawAccepted", async (gameId) => {
     const game = await Game.findById(gameId);
-    game.status = "dra
+    game.status = "draw";
     await game.save();
     io.to(gameId).emit("gameOver", "draw", game.winner);
   });
