@@ -18,6 +18,13 @@ const AppError = require("./utils/appError");
 const User = require("./models/userModel");
 const Game = require("./models/gameModel");
 const { Chess } = require("chess.js");
+const { ExpressPeerServer } = require("peer");
+
+const peerServer = ExpressPeerServer(server, {
+  debug: true,
+});
+
+app.use("/peerjs", peerServer); // Add this line to integrate peerServer
 
 process.on("uncaughtException", (err) => {
   console.log(err.name, err.message);
@@ -49,7 +56,7 @@ const startGameTimer = (gameId) => {
       const result =
         game.whiteTime <= 0 ? "Black wins by timeout" : "White wins by timeout";
       game.winner = result.includes("White") ? "White" : "Black";
-      game.status = "over";
+      game.status = "timeout";
       await game.save();
       io.to(gameId).emit("gameOver", result, game.winner);
       return;
@@ -86,6 +93,7 @@ io.use(async function (socket, next) {
     next(new AppError("Something went wrong in authentication...", 401));
   }
 });
+
 io.on("connection", async (socket) => {
   console.log("a user connected");
 
@@ -175,43 +183,17 @@ io.on("connection", async (socket) => {
     try {
       const game = await Game.findById(move.gameId);
       if (game) {
-        // const currentTime = getTime();
-        // const elapsedTime = currentTime - game.lastMoveTime;
-
-        // if (game.fen.split(" ")[1] === "w") {
-        //   game.whiteTime -= elapsedTime;
-        // } else {
-        //   game.blackTime -= elapsedTime;
-        // }
-
-        // if (game.whiteTime <= 0 || game.blackTime <= 0) {
-        //   const result =
-        //     game.whiteTime <= 0
-        //       ? "Black wins by timeout"
-        //       : "White wins by timeout";
-        //   game.winner = result.includes("White") ? "White" : "Black";
-        //   console.log(`Game over due to timeout: ${result}`);
-        //   io.to(move.gameId).emit("gameOver", result, game.winner);
-        //   return;
-        // }
-
         game.fen = move.fen;
-        // game.lastMoveTime = currentTime;
-
         await game.save();
         io.to(move.gameId).emit("updateBoard", move.fen);
-        // io.to(move.gameId).emit("updateTimes", {
-        //   whiteTime: game.whiteTime,
-        //   blackTime: game.blackTime,
-        // });
 
         const gameInstance = new Chess(game.fen);
-        // console.log(gameInstance.turn());
+
         if (gameInstance.isCheckmate()) {
           if (gameInstance.turn() === "b") {
-            game.winner = "White";
+            game.winner = game.playerWhite;
           } else {
-            game.winner = "Black";
+            game.winner = game.playerBlack;
           }
           game.status = "checkmate";
           await game.save();
@@ -219,19 +201,16 @@ io.on("connection", async (socket) => {
           console.log("checkmate");
         } else if (gameInstance.isDraw()) {
           game.status = "draw";
-          game.winner = "";
           await game.save();
           io.to(move.gameId).emit("gameOver", "draw", game.winner);
         }
         if (gameInstance.isStalemate()) {
           game.status = "stalemate";
-          game.winner = "";
           await game.save();
           io.to(move.gameId).emit("gameOver", "stalemate", game.winner);
         }
         if (gameInstance.isThreefoldRepetition()) {
           game.status = "Three fold repitition";
-          game.winner = "";
           await game.save();
           io.to(move.gameId).emit(
             "gameOver",
@@ -241,7 +220,6 @@ io.on("connection", async (socket) => {
         }
         if (gameInstance.isInsufficientMaterial()) {
           game.status = "insufficient material";
-          game.winner = "";
           await game.save();
           io.to(move.gameId).emit(
             "gameOver",
@@ -258,8 +236,11 @@ io.on("connection", async (socket) => {
   socket.on("resign", async function (resign) {
     const game = await Game.findById(resign.gameId);
     game.status = "resign";
-    game.winner = resign.color === "white" ? "White" : "Black";
-    const result = `${game.winner} won by resignation`;
+    game.winner =
+      resign.color === "white" ? game.playerWhite : game.playerBlack;
+    const gameWinner = await User.findById(game.winner);
+    const result = `${gameWinner.username} won by resignation`;
+    await game.save();
     io.to(resign.gameId).emit("gameOver", result, game.winner);
   });
 
@@ -271,8 +252,7 @@ io.on("connection", async (socket) => {
 
   socket.on("drawAccepted", async (gameId) => {
     const game = await Game.findById(gameId);
-    game.status = "draw";
-    game.winner = "";
+    game.status = "dra
     await game.save();
     io.to(gameId).emit("gameOver", "draw", game.winner);
   });
@@ -285,6 +265,10 @@ io.on("connection", async (socket) => {
     }
   });
 
+  socket.on("peerId", ({ peerId, gameId }) => {
+    socket.broadcast.to(gameId).emit("opponentPeerId", peerId);
+  });
+
   socket.on("disconnect", async () => {
     console.log("user disconnected");
 
@@ -292,8 +276,7 @@ io.on("connection", async (socket) => {
     await socket.user.save({
       validateBeforeSave: false,
     });
-    // console.log(socket.user);
-
+    console.log("hello");
     const onlineUsers = await User.find({ online: true });
     io.emit("updateOnlineList", onlineUsers);
     io.emit("removeChallenge", socket.user._id);

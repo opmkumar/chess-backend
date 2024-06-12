@@ -1,8 +1,8 @@
 const mongoose = require("mongoose");
 
 const gameSchema = new mongoose.Schema({
-  playerWhite: { type: mongoose.Schema.ObjectId, ref: "Tour", required: true },
-  playerBlack: { type: mongoose.Schema.ObjectId, ref: "Tour", required: true },
+  playerWhite: { type: mongoose.Schema.ObjectId, ref: "User", required: true },
+  playerBlack: { type: mongoose.Schema.ObjectId, ref: "User", required: true },
   fen: { type: String },
   status: { type: String, default: "pending" },
   whiteTime: {
@@ -17,7 +17,7 @@ const gameSchema = new mongoose.Schema({
     type: Number,
     default: () => Date.now(),
   },
-  winner: { type: String },
+  winner: { type: mongoose.Schema.ObjectId, ref: "User", default: null },
 });
 
 const Game = mongoose.model("Game", gameSchema);
